@@ -7,6 +7,7 @@ import plotly.express as px
 from urllib.parse import urljoin, urlparse
 import time
 
+
 # --- 1. 爬蟲核心邏輯 ---
 def crawl_web(start_url, max_per_layer=20):
     """
