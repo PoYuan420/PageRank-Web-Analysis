@@ -5,3 +5,5 @@ networkx
 pandas
 plotly
 scipy
+pyvis
+streamlit-pyvis
