@@ -74,7 +74,7 @@ st.title("🌐 網頁權重影響力分析儀表板")
 
 with st.sidebar:
     st.header("⚙️ 參數設定")
-    start_url = st.text_input("起始網址", value="https://zh.wikipedia.org/wiki/三上悠亞")
+    start_url = st.text_input("起始網址", value="https://zh.wikipedia.org/zh-tw/%E5%B7%A8%E7%9F%B3%E5%BC%B7%E6%A3%AE")
     max_links = st.slider("每層抓取上限", 5, 50, 15)
     alpha = st.slider("PageRank 阻尼係數", 0.0, 1.0, 0.85)
     analyze_btn = st.button("開始分析", type="primary")
