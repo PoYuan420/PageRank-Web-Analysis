@@ -6,3 +6,4 @@ pandas
 plotly
 scipy
 pyvis
+opencc-python-reimplemented
