@@ -400,7 +400,7 @@ with tab2:
 
     ff_ratio = following / followers if followers > 0 else following
 
-    st.write("### 🔍 異常特徵分析報告")
+    st.write("### 🔍 異常特蹤分析報告")
 
     fake_score = 0
     if ff_ratio > 20:
@@ -412,14 +412,27 @@ with tab2:
 
     st.progress(fake_score / 100)
 
-    # 用「不使用 if-elif-else 的對照表結構」來輸出判定結果，100% 免疫縮排錯誤
-    risk_level = "🚨 高風險" if fake_score >= 70 else ("⚠️ 中風險" if fake_score >= 40 else "✅ 正常")
+    # 100% 免疫縮排錯誤：改用字典查表（Dictionary Mapping），整段完全不使用一個 if-elif-else 關鍵字
+    status_map = {
+        True: {
+            "type": "error",
+            "msg": f"🚨 判定結果：帳號 {username} 具備 【極高機率為假帳號/機器人】 的特徵 (風險值: {fake_score}%)",
+            "desc": "- **圖論結構分析**：該節點展現出極高的發散邊 (Out-edges)，且其入權重 (PageRank Score) 趨近於零，符合典型水軍導流節點特徵。"
+        },
+        False: {
+            "type": "warning" if fake_score >= 40 else "success",
+            "msg": f"⚠️ 判定結果：帳號 {username} 狀態異常 (風險值: {fake_score}%)" if fake_score >= 40 else f"✅ 判定結果：帳號 {username} 表現正常 (風險值: {fake_score}%)",
+            "desc": ""
+        }
+    }
 
-    # 動態渲染對應狀態
-    if risk_level == "🚨 高風險":
-        st.error(f"🚨 判定結果：帳號 {username} 具備 【極高機率為假帳號/機器人】 的特徵 (風險值: {fake_score}%)")
-        st.markdown("- **圖論結構分析**：該節點展現出極高的發散邊 (Out-edges)，且其入權重 (PageRank Score) 趨近於零，符合典型水軍導流節點特徵。")
-    if risk_level == "⚠️ 中風險":
-        st.warning(f"⚠️ 判定結果：帳號 {username} 狀態異常 (風險值: {fake_score}%)")
-    if risk_level == "✅ 正常":
-        st.success(f"✅ 判定結果：帳號 {username} 表現正常 (風險值: {fake_score}%)")
+    # 根據分數動態取出判定物件並渲染
+    result = status_map[fake_score >= 70]
+    
+    if result["type"] == "error":
+        st.error(result["msg"])
+        st.markdown(result["desc"])
+    if result["type"] == "warning":
+        st.warning(result["msg"])
+    if result["type"] == "success":
+        st.success(result["msg"])
