@@ -12,7 +12,7 @@ from opencc import OpenCC
 from concurrent.futures import ThreadPoolExecutor
 
 # 初始化繁體中文轉換器
-cc = OpenCC('s2twp') # 簡體中文轉台灣正體
+cc = OpenCC('s2twp')  # 簡體中文轉台灣正體
 
 # --- 1. 高效並行爬蟲核心邏輯 ---
 def fetch_single_url(args):
@@ -20,7 +20,7 @@ def fetch_single_url(args):
     url, headers, max_links = args
     links = set()
     try:
-        response = requests.get(url, headers=headers, timeout=3) # 縮短 timeout 避免卡死
+        response = requests.get(url, headers=headers, timeout=3)  # 縮短 timeout 避免卡死
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             for a in soup.find_all('a', href=True):
@@ -191,7 +191,6 @@ with tab1:
 
         with col1:
             st.subheader("🏆 全域權重值排名 (Top 10)")
-            # 建立一個精簡名稱欄位供主表格呈現
             display_df = df.head(10).copy()
             display_df.insert(0, '網頁名稱', display_df['網址'].apply(get_short_label))
             st.dataframe(display_df[['網頁名稱', '權重值']], use_container_width=True)
@@ -222,11 +221,11 @@ with tab1:
                 # 篩選下游資料
                 sub_df = df[df['網址'].isin([cc.convert(s) for s in successors])].copy()
                 
-                # 【優化 1：將長網址縮短為名稱，完整網址塞進 hover_data】
+                # 將長網址縮短為名稱，完整網址塞進 hover_data
                 sub_df['顯示名稱'] = sub_df['網址'].apply(get_short_label)
                 sub_df = sub_df.sort_values(by='權重值', ascending=False)
 
-                # 【優化 2：動態生成圖表，橫軸文字不再傾斜】
+                # 動態生成圖表，橫軸文字不再傾斜
                 if chart_type == "直方圖":
                     fig_sub = px.bar(
                         sub_df, 
@@ -263,7 +262,7 @@ with tab1:
                     
                 st.plotly_chart(fig_sub, use_container_width=True)
 
-                # 【優化 3：進階圖表數據統計與白話文結構洞察解說】
+                # 進階圖表數據統計與白話文結構洞察解說
                 st.markdown("#### 📊 統計數據深度解說")
                 
                 total_links = len(sub_df)
@@ -333,9 +332,12 @@ with tab2:
     st.write("### 🔍 異常特徵分析報告")
     
     fake_score = 0
-    if ff_ratio > 20: fake_score += 40  
-    if post_count < 3: fake_score += 30  
-    if avg_likes == 0: fake_score += 30  
+    if ff_ratio > 20: 
+        fake_score += 40  
+    if post_count < 3: 
+        fake_score += 30  
+    if avg_likes == 0: 
+        fake_score += 30  
     
     st.progress(fake_score / 100)
     
