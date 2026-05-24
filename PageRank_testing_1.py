@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 import networkx as nx
 import pandas as pd
 import plotly.express as px
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote
 import time
 from pyvis.network import Network
 import streamlit.components.v1 as components
@@ -93,7 +93,7 @@ def draw_influence_bar(current_val, df):
     score = (current_val / max_val) * 100 if max_val > 0 else 0
     score = round(score, 1)
 
-    # 這裡也全部改用字典映射，移除所有 if-elif-else 結構，徹底避免縮排問題
+    # 運用組態映射表，維持防禦縮排邏輯錯誤
     level_map = [
         (20, ("極弱", "#9ca3af")),
         (40, ("弱", "#fbbf24")),
@@ -143,13 +143,13 @@ def draw_interactive_graph(G, df):
         node_size = 15 + (row["權重值"] / max_weight * 50)
 
         raw_label = urlparse(url).netloc if len(url) > 20 else url
-        clean_label = cc.convert(raw_label)
+        clean_label = unquote(cc.convert(raw_label))  # 自動還原中文名稱，避免顯示亂碼
 
         current_score = (row["權重值"] / max_weight) * 100
         node_color = "#ef4444" if current_score >= 60 else "#60a5fa"
 
         net.add_node(
-            url, label=clean_label, title=url, size=node_size, color=node_color
+            url, label=clean_label, title=unquote(url), size=node_size, color=node_color
         )
 
     for u, v in G.edges():
@@ -169,13 +169,13 @@ def draw_interactive_graph(G, df):
         st.error("拓樸圖生成失敗。")
 
 
-# Helper 函數：精簡長網址為更具辨識度的名稱
+# Helper 函數：精簡長網址為更具辨識度的名稱並解碼中文
 def get_short_label(url):
     parsed = urlparse(url)
     path_parts = [p for p in parsed.path.split("/") if p]
     if path_parts:
-        return cc.convert(path_parts[-1])
-    return cc.convert(parsed.netloc)
+        return unquote(cc.convert(path_parts[-1]))
+    return unquote(cc.convert(parsed.netloc))
 
 
 # --- 3. Streamlit 主介面 ---
@@ -226,146 +226,159 @@ with tab1:
         G = st.session_state.G
 
         st.divider()
-        col1, col2 = st.columns([4, 6])
+        st.title("🎯 PageRank 數據深度分析報告")
+        
+        # -------------------------------------------------------------
+        # 區塊一：全域排名與分佈（由原本的左右分欄拆開，改成全寬度上下排列）
+        # -------------------------------------------------------------
+        st.header("🏆 全域權重特徵")
+        
+        st.subheader("📌 全域權重值排名 (Top 10)")
+        display_df = df.head(10).copy()
+        display_df.insert(0, "網頁名稱", display_df["網址"].apply(get_short_label))
+        st.dataframe(display_df[["網頁名稱", "權重值"]], use_container_width=True)
 
-        with col1:
-            st.subheader("🏆 全域權重值排名 (Top 10)")
-            display_df = df.head(10).copy()
-            display_df.insert(0, "網頁名稱", display_df["網址"].apply(get_short_label))
-            st.dataframe(display_df[["網頁名稱", "權重值"]], use_container_width=True)
+        st.subheader("📊 全域權重分佈佔比")
+        pie_df = df.head(15).copy()
+        pie_df["網頁名稱"] = pie_df["網址"].apply(get_short_label)
+        fig_pie = px.pie(
+            pie_df,
+            values="權重值",
+            names="網頁名稱",
+            hole=0.4,
+            hover_data={"網址": True},
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-            st.subheader("📊 全域權重分佈佔比")
-            pie_df = df.head(15).copy()
-            pie_df["網頁名稱"] = pie_df["網址"].apply(get_short_label)
-            fig_pie = px.pie(
-                pie_df,
-                values="權重值",
-                names="網頁名稱",
-                hole=0.4,
-                hover_data={"網址": True},
+        st.divider()
+
+        # -------------------------------------------------------------
+        # 區塊二：特定節點深入分析（完全單欄獨立展開，視野最寬敞）
+        # -------------------------------------------------------------
+        st.header("🔍 核心節點深入追蹤")
+        selected_site = st.selectbox("請選擇欲分析的網頁：", df["網址"].tolist())
+
+        current_weight = df.loc[df["網址"] == selected_site, "權重值"].values[0]
+        draw_influence_bar(current_weight, df)
+
+        # 下游權重分佈區塊
+        st.subheader("📍 下遊連結權重分佈")
+        chart_type = st.radio(
+            "選擇統計圖表類型：", ["直方圖", "折線圖", "圓餅圖"], horizontal=True
+        )
+
+        successors = list(G.successors(selected_site)) if selected_site in G else []
+        if not successors and selected_site.endswith("/"):
+            successors = (
+                list(G.successors(selected_site[:-1]))
+                if selected_site[:-1] in G
+                else []
             )
-            st.plotly_chart(fig_pie, use_container_width=True)
 
-        with col2:
-            st.subheader("🎯 特定節點深入分析")
-            selected_site = st.selectbox("請選擇欲分析的網頁：", df["網址"].tolist())
+        if successors:
+            # 篩選下游資料
+            sub_df = df[df["網址"].isin([cc.convert(s) for s in successors])].copy()
 
-            current_weight = df.loc[df["網址"] == selected_site, "權重值"].values[0]
-            draw_influence_bar(current_weight, df)
+            # 將長網址縮短為中文名稱，完整網址塞進 hover_data
+            sub_df["顯示名稱"] = sub_df["網址"].apply(get_short_label)
+            sub_df = sub_df.sort_values(by="權重值", ascending=False)
 
-            # 下游權重分佈區塊
-            st.write("### 📍 下遊連結權重分佈")
-            chart_type = st.radio(
-                "選擇統計圖表類型：", ["直方圖", "折線圖", "圓餅圖"], horizontal=True
+            # 動態生成圖表，橫軸文字加上 45 度傾斜與充足寬度空間
+            if chart_type == "直方圖":
+                fig_sub = px.bar(
+                    sub_df,
+                    x="顯示名稱",
+                    y="權重值",
+                    title=f"【{get_short_label(selected_site)}】的下游網頁權重直方圖",
+                    color="權重值",
+                    color_continuous_scale="Blues",
+                    hover_data={
+                        "網址": True,
+                        "顯示名稱": False,
+                        "權重值": ":.6f",
+                    },
+                )
+                fig_sub.update_layout(
+                    xaxis_tickangle=45, xaxis_title="網頁名稱 (滑鼠懸停看完整網址)"
+                )
+
+            elif chart_type == "折線圖":
+                fig_sub = px.line(
+                    sub_df,
+                    x="顯示名稱",
+                    y="權重值",
+                    title=f"【{get_short_label(selected_site)}】的下游網頁權重趨勢圖",
+                    markers=True,
+                    hover_data={
+                        "網址": True,
+                        "顯示名稱": False,
+                        "權重值": ":.6f",
+                    },
+                )
+                fig_sub.update_layout(
+                    xaxis_tickangle=45, xaxis_title="網頁名稱 (滑鼠懸停看完整網址)"
+                )
+
+            else:
+                fig_sub = px.pie(
+                    sub_df,
+                    values="權重值",
+                    names="顯示名稱",
+                    title=f"【{get_short_label(selected_site)}】的下游網頁權重佔比圓餅圖",
+                    hole=0.3,
+                    hover_data={"網址": True},
+                )
+                fig_sub.update_traces(
+                    textposition="inside", textinfo="percent+label"
+                )
+
+            st.plotly_chart(fig_sub, use_container_width=True)
+
+            # -------------------------------------------------------------
+            # 區塊三：統計數據與解說
+            # -------------------------------------------------------------
+            st.subheader("📊 統計數據深度解說")
+
+            total_links = len(sub_df)
+            max_node = sub_df.iloc[0]
+            min_node = sub_df.iloc[-1]
+            avg_weight = sub_df["權重值"].mean()
+            std_weight = sub_df["權重值"].std()
+
+            top_1_share = (
+                (max_node["權重值"] / sub_df["權重值"].sum()) * 100
+                if sub_df["權重值"].sum() > 0
+                else 0
             )
 
-            successors = list(G.successors(selected_site)) if selected_site in G else []
-            if not successors and selected_site.endswith("/"):
-                successors = (
-                    list(G.successors(selected_site[:-1]))
-                    if selected_site[:-1] in G
-                    else []
-                )
+            # 看板改用整行全寬度展開，字體和空間更大
+            c1, c2, c3 = st.columns(3)
+            c1.metric("下游總節點數 (出度)", f"{total_links} 個")
+            c2.metric("平均分配權重值", f"{avg_weight:.5f}")
+            c3.metric("最大核心節點佔比", f"{top_1_share:.1f}%")
 
-            if successors:
-                # 篩選下游資料
-                sub_df = df[df["網址"].isin([cc.convert(s) for s in successors])].copy()
+            st.markdown("> **💡 網路圖論結構洞察報告：**")
 
-                # 將長網址縮短為名稱，完整網址塞進 hover_data
-                sub_df["顯示名稱"] = sub_df["網址"].apply(get_short_label)
-                sub_df = sub_df.sort_values(by="權重值", ascending=False)
+            if top_1_share > 50:
+                structure_desc = f"⚠️ **權力高度集中型結構**：下游網頁中，極高比例的權重被單一網站吞噬。這代表當前選取的網頁具有強烈的**導流單一性**，資訊或流量幾乎全權交由單一核心節點吸收。"
+            elif std_weight < 0.005 if not pd.isna(std_weight) else True:
+                structure_desc = "🤝 **權力均平型結構**：下游各網頁之間的權重標準差極低，分配得極為均勻。這意味著當前網頁是一個**中立型門戶網站**（如維基百科首頁），它對所有分支連結一視同仁，沒有刻意向特定站點偏袒導流。"
+            else:
+                structure_desc = f"📈 **階層式分散結構**：流量與權重呈階梯式向外遞減傳遞，網路生態分層健康。流量的第一受益者為 `{max_node['顯示名稱']}`，最末端分流則為 `{min_node['顯示名稱']}`。"
 
-                # 動態生成圖表，橫軸文字不再傾斜
-                if chart_type == "直方圖":
-                    fig_sub = px.bar(
-                        sub_df,
-                        x="顯示名稱",
-                        y="權重值",
-                        title=f"【{get_short_label(selected_site)}】的下游網頁權重直方圖",
-                        color="權重值",
-                        color_continuous_scale="Blues",
-                        hover_data={
-                            "網址": True,
-                            "顯示名稱": False,
-                            "權重值": ":.6f",
-                        },
-                    )
-                    fig_sub.update_layout(
-                        xaxis_tickangle=0, xaxis_title="網頁名稱 (滑鼠懸停看完整網址)"
-                    )
+            st.markdown(
+                f"""
+            * 🔝 **最強下游分支**：`{unquote(max_node['網址'])}` （分得權重：`{max_node['權重值']:.6f}`）
+            * 🔚 **最弱下游分支**：`{unquote(min_node['網址'])}` （分得權重：`{min_node['權重值']:.6f}`）
+            * 📊 **拓樸特徵判定**：{structure_desc}
+            """
+            )
+        else:
+            st.warning("此網頁在本次分析層級中無下游連結，或屬於邊緣葉節點。")
 
-                elif chart_type == "折線圖":
-                    fig_sub = px.line(
-                        sub_df,
-                        x="顯示名稱",
-                        y="權重值",
-                        title=f"【{get_short_label(selected_site)}】的下游網頁權重趨勢圖",
-                        markers=True,
-                        hover_data={
-                            "網址": True,
-                            "顯示名稱": False,
-                            "權重值": ":.6f",
-                        },
-                    )
-                    fig_sub.update_layout(
-                        xaxis_tickangle=0, xaxis_title="網頁名稱 (滑鼠懸停看完整網址)"
-                    )
-
-                else:
-                    fig_sub = px.pie(
-                        sub_df,
-                        values="權重值",
-                        names="顯示名稱",
-                        title=f"【{get_short_label(selected_site)}】的下游網頁權重佔比圓餅圖",
-                        hole=0.3,
-                        hover_data={"網址": True},
-                    )
-                    fig_sub.update_traces(
-                        textposition="inside", textinfo="percent+label"
-                    )
-
-                st.plotly_chart(fig_sub, use_container_width=True)
-
-                # 進階圖表數據統計與白話文結構洞察解說
-                st.markdown("#### 📊 統計數據深度解說")
-
-                total_links = len(sub_df)
-                max_node = sub_df.iloc[0]
-                min_node = sub_df.iloc[-1]
-                avg_weight = sub_df["權重值"].mean()
-                std_weight = sub_df["權重值"].std()
-
-                # 計算最大節點吞噬了下游總權重的多少比例
-                top_1_share = (
-                    (max_node["權重值"] / sub_df["權重值"].sum()) * 100
-                    if sub_df["權重值"].sum() > 0
-                    else 0
-                )
-
-                # 建立精美的統計 Metric 看板
-                c1, c2, c3 = st.columns(3)
-                c1.metric("下游總節點數 (出度)", f"{total_links} 個")
-                c2.metric("平均分配權重值", f"{avg_weight:.5f}")
-                c3.metric("最大核心節點佔比", f"{top_1_share:.1f}%")
-
-                # 提供白話文的圖論結構脈絡解釋
-                st.markdown("> **💡 網路圖論結構洞察報告：**")
-
-                if top_1_share > 50:
-                    structure_desc = f"⚠️ **權力高度集中型結構**：下游網頁中，極高比例的權重被單一網站吞噬。這代表當前選取的網頁具有強烈的**導流單一性**，資訊或流量幾乎全權交由單一核心節點吸收。"
-                elif std_weight < 0.005 if not pd.isna(std_weight) else True:
-                    structure_desc = "🤝 **權力均平型結構**：下游各網頁之間的權重標準差極低，分配得極為均勻。這意味著當前網頁是一個**中立型門戶網站**（如維基百科首頁），它對所有分支連結一視同仁，沒有刻意向特定站點偏袒導流。"
-                else:
-                    structure_desc = f"📈 **階層式分散結構**：流量與權重呈階梯式向外遞減傳遞，網路生態分層健康。流量的第一受益者為 `{max_node['顯示名稱']}`，最末端分流則為 `{min_node['顯示名稱']}`。"
-
-                st.markdown(
-                    f"""
-                * 🔝 **最強下游分支**：`{max_node['網址']}` （分得權重：`{max_node['權重值']:.6f}`）
-                * 🔚 **最弱下游分支**：`{min_node['網址']}` （分得權重：`{min_node['權重值']:.6f}`）
-                * 📊 **拓樸特徵判定**：{structure_desc}
-                """
-                )
-
+        # -------------------------------------------------------------
+        # 區塊四：互動式網路拓樸圖
+        # -------------------------------------------------------------
         st.divider()
         st.subheader("🌳 網頁關係拓樸圖 (互動式)")
         st.info(
@@ -411,7 +424,7 @@ with tab2:
 
     st.progress(fake_score / 100)
 
-    # 運用絕對不包含 if-else 關鍵字的純狀態處理，完全避開 Python 縮排與殘留代碼的解析盲區
+    # 依然保留你原本能正常執行的純獨立 if 判斷格式，完全不變動，絕對 100% 避開縮排錯誤！
     is_high_risk = int(fake_score >= 70)
     is_mid_risk = int(40 <= fake_score < 70)
     is_normal = int(fake_score < 40)
