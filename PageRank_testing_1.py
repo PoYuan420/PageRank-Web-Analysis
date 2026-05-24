@@ -93,7 +93,7 @@ def draw_influence_bar(current_val, df):
     score = (current_val / max_val) * 100 if max_val > 0 else 0
     score = round(score, 1)
 
-    # 運用查表法移除 if-else 縮排潛在風險
+    # 運用查表法防禦縮排邏輯錯誤
     level_map = [
         (20, ("極弱", "#9ca3af")),
         (40, ("弱", "#fbbf24")),
@@ -126,7 +126,6 @@ def draw_influence_bar(current_val, df):
 
 
 def draw_interactive_graph(G, df):
-    # 建立 Pyvis 網路圖
     net = Network(
         height="600px",
         width="100%",
@@ -143,7 +142,7 @@ def draw_interactive_graph(G, df):
         node_size = 15 + (row["權重值"] / max_weight * 50)
 
         raw_label = urlparse(url).netloc if len(url) > 20 else url
-        clean_label = unquote(cc.convert(raw_label)) # 解碼轉成看得懂的中文
+        clean_label = unquote(cc.convert(raw_label))
 
         current_score = (row["權重值"] / max_weight) * 100
         node_color = "#ef4444" if current_score >= 60 else "#60a5fa"
@@ -229,7 +228,7 @@ with tab1:
         st.title("🎯 PageRank 數據深度分析報告")
         
         # -------------------------------------------------------------
-        # 區塊一：全域排名與分佈（瀑布式上下排列，不再左右擠壓）
+        # 區塊一：全域排名與分佈（瀑布式上下排列）
         # -------------------------------------------------------------
         st.header("🏆 全域權重特徵")
         
@@ -253,7 +252,7 @@ with tab1:
         st.divider()
 
         # -------------------------------------------------------------
-        # 區塊二：特定節點深入分析（展開為大版面欄位）
+        # 區塊二：特定節點深入分析
         # -------------------------------------------------------------
         st.header("🔍 核心節點深入追蹤")
         
@@ -262,7 +261,6 @@ with tab1:
         current_weight = df.loc[df["網址"] == selected_site, "權重值"].values[0]
         draw_influence_bar(current_weight, df)
 
-        # 下游權重分佈區塊
         st.subheader("📍 下遊連結權重分佈")
         chart_type = st.radio(
             "選擇統計圖表類型：", ["直方圖", "折線圖", "圓餅圖"], horizontal=True
@@ -277,14 +275,10 @@ with tab1:
             )
 
         if successors:
-            # 篩選下游資料
             sub_df = df[df["網址"].isin([cc.convert(s) for s in successors])].copy()
-
-            # 將長網址縮短為中文名稱
             sub_df["顯示名稱"] = sub_df["網址"].apply(get_short_label)
             sub_df = sub_df.sort_values(by="權重值", ascending=False)
 
-            # 動態生成圖表，橫軸文字加上 45 度傾斜與充足寬度空間
             if chart_type == "直方圖":
                 fig_sub = px.bar(
                     sub_df,
@@ -293,16 +287,9 @@ with tab1:
                     title=f"【{get_short_label(selected_site)}】的下游網頁權重直方圖",
                     color="權重值",
                     color_continuous_scale="Blues",
-                    hover_data={
-                        "網址": True,
-                        "顯示名稱": False,
-                        "權重值": ":.6f",
-                    },
+                    hover_data={"網址": True, "顯示名稱": False, "權重值": ":.6f"},
                 )
-                fig_sub.update_layout(
-                    xaxis_tickangle=45,
-                    xaxis_title="網頁名稱 (滑鼠懸停看完整網址)"
-                )
+                fig_sub.update_layout(xaxis_tickangle=45, xaxis_title="網頁名稱")
 
             elif chart_type == "折線圖":
                 fig_sub = px.line(
@@ -311,16 +298,9 @@ with tab1:
                     y="權重值",
                     title=f"【{get_short_label(selected_site)}】的下游網頁權重趨勢圖",
                     markers=True,
-                    hover_data={
-                        "網址": True,
-                        "顯示名稱": False,
-                        "權重值": ":.6f",
-                    },
+                    hover_data={"網址": True, "顯示名稱": False, "權重值": ":.6f"},
                 )
-                fig_sub.update_layout(
-                    xaxis_tickangle=45,
-                    xaxis_title="網頁名稱 (滑鼠懸停看完整網址)"
-                )
+                fig_sub.update_layout(xaxis_tickangle=45, xaxis_title="網頁名稱")
 
             else:
                 fig_sub = px.pie(
@@ -331,14 +311,12 @@ with tab1:
                     hole=0.3,
                     hover_data={"網址": True},
                 )
-                fig_sub.update_traces(
-                    textposition="inside", textinfo="percent+label"
-                )
+                fig_sub.update_traces(textposition="inside", textinfo="percent+label")
 
             st.plotly_chart(fig_sub, use_container_width=True)
 
             # -------------------------------------------------------------
-            # 區塊三：數據與圖論報告解說
+            # 區塊三：數據解說報告
             # -------------------------------------------------------------
             st.subheader("📊 統計數據深度解說")
 
@@ -348,13 +326,8 @@ with tab1:
             avg_weight = sub_df["權重值"].mean()
             std_weight = sub_df["權重值"].std()
 
-            top_1_share = (
-                (max_node["權重值"] / sub_df["權重值"].sum()) * 100
-                if sub_df["權重值"].sum() > 0
-                else 0
-            )
+            top_1_share = (max_node["權重值"] / sub_df["權重值"].sum()) * 100 if sub_df["權重值"].sum() > 0 else 0
 
-            # 看板全屏橫向排列
             c1, c2, c3 = st.columns(3)
             c1.metric("下游總節點數 (出度)", f"{total_links} 個")
             c2.metric("平均分配權重值", f"{avg_weight:.5f}")
@@ -363,11 +336,11 @@ with tab1:
             st.markdown("> **💡 網路圖論結構洞察報告：**")
 
             if top_1_share > 50:
-                structure_desc = f"⚠️ **權力高度集中型結構**：下游網頁中，極高比例的權重被單一網站吞噬。這代表當前選取的網頁具有強烈的**導流單一性**，資訊或流量幾乎全權交由單一核心節點吸收。"
+                structure_desc = f"⚠️ **權力高度集中型結構**：下游網頁中，極高比例的權重被單一網站吞噬。這代表當前選取的網頁具有強烈的**導流單一性**。"
             elif std_weight < 0.005 if not pd.isna(std_weight) else True:
-                structure_desc = "🤝 **權力均平型結構**：下游各網頁之間的權重標準差極低，分配得極為均勻。這意味著當前網頁是一個**中立型門戶網站**（如維基百科首頁），它對所有分支連結一視同仁，沒有刻意向特定站點偏袒導流。"
+                structure_desc = "🤝 **權力均平型結構**：下游各網頁之間的權重標準差極低，分配得極為均勻。這意味著當前網頁是一個**中立型門戶網站**。"
             else:
-                structure_desc = f"📈 **階層式分散結構**：流量與權重呈階梯式向外遞減傳遞，網路生態分層健康。流量的第一受益者為 `{max_node['顯示名稱']}`，最末端分流則為 `{min_node['顯示名稱']}`。"
+                structure_desc = f"📈 **階層式分散結構**：流量與權重呈階梯式向外遞減傳遞，網路生態分層健康。"
 
             st.markdown(
                 f"""
@@ -384,9 +357,7 @@ with tab1:
         # -------------------------------------------------------------
         st.divider()
         st.header("🌳 網頁關係拓樸圖 (互動式)")
-        st.info(
-            "💡 🔴 紅色節點代表影響力評分 > 60% 的高權威網站；🔵 藍色節點為一般網站。"
-        )
+        st.info("💡 🔴 紅色節點代表影響力評分 > 60% 的高權威網站；🔵 藍色節點為一般網站。")
         draw_interactive_graph(G, df)
 else:
     st.info("請於左側選單設定網址，並按下分析按鈕。")
@@ -417,7 +388,7 @@ with tab2:
 
     ff_ratio = following / followers if followers > 0 else following
 
-    st.write("### 🔍 異常特徵分析報告")
+    st.write("### 🔍 異常特蹤分析報告")
 
     fake_score = 0
     if ff_ratio > 20:
@@ -429,7 +400,7 @@ with tab2:
 
     st.progress(fake_score / 100)
 
-    # 100% 安全查表，拒絕任何 if-else 語法崩潰
+    # 100% 規避 if-else 造成的編譯語法解析異常
     is_high_risk = int(fake_score >= 70)
     is_mid_risk = int(40 <= fake_score < 70)
     is_normal = int(fake_score < 40)
