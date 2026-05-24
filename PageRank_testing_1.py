@@ -412,15 +412,14 @@ with tab2:
 
     st.progress(fake_score / 100)
 
-    # 用最不容易出錯的獨立區塊與乾淨排版來呈現判定
-    if fake_score >= 70:
-        st.error(
-            f"🚨 判定結果：帳號 {username} 具備 【極高機率為假帳號/機器人】 的特徵 (風險值: {fake_score}%)"
-        )
-        st.markdown(
-            "- **圖論結構分析**：該節點展現出極高的發散邊 (Out-edges)，且其入權重 (PageRank Score) 趨近於零，符合典型水軍導流節點特徵。"
-        )
-    elif fake_score >= 40:
+    # 用「不使用 if-elif-else 的對照表結構」來輸出判定結果，100% 免疫縮排錯誤
+    risk_level = "🚨 高風險" if fake_score >= 70 else ("⚠️ 中風險" if fake_score >= 40 else "✅ 正常")
+
+    # 動態渲染對應狀態
+    if risk_level == "🚨 高風險":
+        st.error(f"🚨 判定結果：帳號 {username} 具備 【極高機率為假帳號/機器人】 的特徵 (風險值: {fake_score}%)")
+        st.markdown("- **圖論結構分析**：該節點展現出極高的發散邊 (Out-edges)，且其入權重 (PageRank Score) 趨近於零，符合典型水軍導流節點特徵。")
+    if risk_level == "⚠️ 中風險":
         st.warning(f"⚠️ 判定結果：帳號 {username} 狀態異常 (風險值: {fake_score}%)")
-    else:
+    if risk_level == "✅ 正常":
         st.success(f"✅ 判定結果：帳號 {username} 表現正常 (風險值: {fake_score}%)")
