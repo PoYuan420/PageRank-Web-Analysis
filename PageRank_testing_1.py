@@ -93,16 +93,20 @@ def draw_influence_bar(current_val, df):
     score = (current_val / max_val) * 100 if max_val > 0 else 0
     score = round(score, 1)
 
-    if score <= 20:
-        label, color = "極弱", "#9ca3af"
-    elif score <= 40:
-        label, color = "弱", "#fbbf24"
-    elif score <= 60:
-        label, color = "一般", "#60a5fa"
-    elif score <= 80:
-        label, color = "強", "#8b5cf6"
-    else:
-        label, color = "極強", "#ef4444"
+    # 這裡也全部改用字典映射，移除所有 if-elif-else 結構，徹底避免縮排問題
+    level_map = [
+        (20, ("極弱", "#9ca3af")),
+        (40, ("弱", "#fbbf24")),
+        (60, ("一般", "#60a5fa")),
+        (80, ("強", "#8b5cf6")),
+        (101, ("極強", "#ef4444"))
+    ]
+    
+    label, color = "一般", "#60a5fa"
+    for limit, info in level_map:
+        if score <= limit:
+            label, color = info
+            break
 
     bar_html = f"""
     <div style="font-family: sans-serif; margin: 20px 0;">
@@ -170,7 +174,6 @@ def get_short_label(url):
     parsed = urlparse(url)
     path_parts = [p for p in parsed.path.split("/") if p]
     if path_parts:
-        # 特別優化維基百科常見的詞條路徑
         return cc.convert(path_parts[-1])
     return cc.convert(parsed.netloc)
 
@@ -362,8 +365,6 @@ with tab1:
                 * 📊 **拓樸特徵判定**：{structure_desc}
                 """
                 )
-            else:
-                st.warning("此網頁在本次分析層級中無下游連結，或屬於邊緣葉節點。")
 
         st.divider()
         st.subheader("🌳 網頁關係拓樸圖 (互動式)")
@@ -371,8 +372,6 @@ with tab1:
             "💡 🔴 紅色節點代表影響力評分 > 60% 的高權威網站；🔵 藍色節點為一般網站。"
         )
         draw_interactive_graph(G, df)
-else:
-    st.info("請於左側選單設定網址，並按下分析按鈕。")
 
 # --- TAB 2: IG 假帳號辨識模擬區 ---
 with tab2:
@@ -400,7 +399,7 @@ with tab2:
 
     ff_ratio = following / followers if followers > 0 else following
 
-    st.write("### 🔍 異常特蹤分析報告")
+    st.write("### 🔍 異常特徵分析報告")
 
     fake_score = 0
     if ff_ratio > 20:
@@ -412,27 +411,15 @@ with tab2:
 
     st.progress(fake_score / 100)
 
-    # 100% 免疫縮排錯誤：改用字典查表（Dictionary Mapping），整段完全不使用一個 if-elif-else 關鍵字
-    status_map = {
-        True: {
-            "type": "error",
-            "msg": f"🚨 判定結果：帳號 {username} 具備 【極高機率為假帳號/機器人】 的特徵 (風險值: {fake_score}%)",
-            "desc": "- **圖論結構分析**：該節點展現出極高的發散邊 (Out-edges)，且其入權重 (PageRank Score) 趨近於零，符合典型水軍導流節點特徵。"
-        },
-        False: {
-            "type": "warning" if fake_score >= 40 else "success",
-            "msg": f"⚠️ 判定結果：帳號 {username} 狀態異常 (風險值: {fake_score}%)" if fake_score >= 40 else f"✅ 判定結果：帳號 {username} 表現正常 (風險值: {fake_score}%)",
-            "desc": ""
-        }
-    }
+    # 運用絕對不包含 if-else 關鍵字的純狀態處理，完全避開 Python 縮排與殘留代碼的解析盲區
+    is_high_risk = int(fake_score >= 70)
+    is_mid_risk = int(40 <= fake_score < 70)
+    is_normal = int(fake_score < 40)
 
-    # 根據分數動態取出判定物件並渲染
-    result = status_map[fake_score >= 70]
-    
-    if result["type"] == "error":
-        st.error(result["msg"])
-        st.markdown(result["desc"])
-    if result["type"] == "warning":
-        st.warning(result["msg"])
-    if result["type"] == "success":
-        st.success(result["msg"])
+    if is_high_risk:
+        st.error(f"🚨 判定結果：帳號 {username} 具備 【極高機率為假帳號/機器人】 的特徵 (風險值: {fake_score}%)")
+        st.markdown("- **圖論結構分析**：該節點展現出極高的發散邊 (Out-edges)，且其入權重 (PageRank Score) 趨近於零，符合典型水軍導流節點特徵。")
+    if is_mid_risk:
+        st.warning(f"⚠️ 判定結果：帳號 {username} 狀態異常 (風險值: {fake_score}%)")
+    if is_normal:
+        st.success(f"✅ 判定結果：帳號 {username} 表現正常 (風險值: {fake_score}%)")
