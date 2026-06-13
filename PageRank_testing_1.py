@@ -377,6 +377,14 @@ with tab2:
     raw_user_input = st.text_input("請輸入要稽核的 Instagram 帳號 ID（不論是否加 @ 均可）：", value="instagram")
     clean_user_id = raw_user_input.strip().replace("@", "").replace(" ", "")
 
+    with st.expander("🔧 進階選項：若自動抓取失敗，可手動輸入真實數據作為備援"):
+        st.caption("若上方帳號因 IG 限流（HTTP 429）等原因無法自動取得資料，可在此手動填入你從 App 上看到的真實數值。填入「粉絲數」大於 0 時，系統將優先使用此處的手動數據。")
+        manual_followers = st.number_input("粉絲數", min_value=0, value=0, step=1, key="manual_followers")
+        manual_following = st.number_input("追蹤中數", min_value=0, value=0, step=1, key="manual_following")
+        manual_posts = st.number_input("貼文數", min_value=0, value=0, step=1, key="manual_posts")
+        manual_bio_length = st.number_input("簡介字數", min_value=0, value=0, step=1, key="manual_bio_length")
+        manual_avatar_choice = st.radio("是否設有自訂頭像？", ["自動判斷", "有頭像", "無頭像"], horizontal=True, key="manual_avatar")
+
     if st.button("🚀 開始分析", type="primary"):
         if not clean_user_id:
             st.warning("請先輸入有效的 Instagram 帳號。")
@@ -385,11 +393,28 @@ with tab2:
             with st.spinner("正在連線 Instagram 解析公開頁面資訊..."):
                 real_data = fetch_real_ig_public_data(clean_user_id)
 
+            # 若自動抓取失敗，且使用者填入了手動數據（粉絲數>0），則以手動數據覆寫
+            used_manual_data = False
+            if not real_data["fetch_success"] and manual_followers > 0:
+                real_data["raw_followers"] = int(manual_followers)
+                real_data["raw_following"] = int(manual_following)
+                real_data["raw_posts"] = int(manual_posts)
+                real_data["bio_length"] = int(manual_bio_length)
+                if manual_avatar_choice == "有頭像":
+                    real_data["has_avatar"] = True
+                elif manual_avatar_choice == "無頭像":
+                    real_data["has_avatar"] = False
+                real_data["fetch_success"] = True
+                used_manual_data = True
+
             st.divider()
             st.header("✅ 第一層：真實公開資料")
 
             if real_data["fetch_success"]:
-                st.success(f"資料來源：{real_data['source_note']}")
+                if used_manual_data:
+                    st.success("資料來源：自動抓取失敗，已採用使用者手動輸入的真實數據。")
+                else:
+                    st.success(f"資料來源：{real_data['source_note']}")
                 rc1, rc2, rc3, rc4 = st.columns(4)
                 rc1.metric("真實粉絲數", f"{real_data['raw_followers']:,}")
                 rc2.metric("真實追蹤數", f"{real_data['raw_following']:,}")
@@ -400,7 +425,7 @@ with tab2:
                 has_avatar_real = real_data["has_avatar"]
                 seed_text = f"{clean_user_id}_{base_followers}"
             else:
-                st.info(f"⚠️ {real_data['source_note']} 系統將改用帳號名稱推算特徵，後續拓樸圖仍為模擬資料。")
+                st.warning(f"⚠️ {real_data['source_note']} 你也可以展開上方「進階選項」手動輸入真實粉絲數等資料，系統會優先採用手動數據；若未填寫，後續特徵將改用帳號名稱推算（拓樸圖仍為模擬資料）。")
                 base_followers = None
                 base_following = None
                 has_avatar_real = real_data["has_avatar"]
