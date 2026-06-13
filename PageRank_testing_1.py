@@ -15,10 +15,10 @@ import random
 import re
 
 # 初始化繁體中文轉換器
-cc = OpenCC('s2twp')
+cc = OpenCC('s2twp')  # 簡體中文轉台灣正體
 
 
-# --- 1. 網頁 PageRank 分析核心爬蟲 ---
+# --- 1. 高效並行爬蟲核心邏輯 (網頁分析) ---
 def fetch_single_url(args):
     url, headers, max_links = args
     links = set()
@@ -39,15 +39,23 @@ def fetch_single_url(args):
 
 def crawl_web_parallel(start_url, max_per_layer=20, max_layers=2):
     G = nx.DiGraph()
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
     current_layer_urls = {start_url}
     visited_urls = set()
+
+    estimated_max = sum([max_per_layer**i for i in range(1, max_layers + 1)])
+    if estimated_max > 500:
+        st.warning(f"⚠️ 警告：當前設定最大可能爬取 {estimated_max} 個節點，耗時較長，請耐心等候。")
 
     status_text = st.empty()
     progress_bar = st.progress(0)
 
     for layer in range(max_layers):
         status_text.write(f"🕸️ 正在分析第 {layer + 1} 層網頁 (當前層節點數: {len(current_layer_urls)})...")
+
         urls_to_crawl = [u for u in current_layer_urls if u not in visited_urls]
         if not urls_to_crawl:
             break
@@ -57,6 +65,7 @@ def crawl_web_parallel(start_url, max_per_layer=20, max_layers=2):
 
         with ThreadPoolExecutor(max_workers=15) as executor:
             results = executor.map(fetch_single_url, tasks)
+
             for i, (parent_url, child_links) in enumerate(results):
                 visited_urls.add(parent_url)
                 for link in child_links:
@@ -78,9 +87,13 @@ def draw_influence_bar(current_val, df, target_col="權重值"):
     score = min(round(score, 1), 100.0)
 
     level_map = [
-        (20, ("極弱", "#9ca3af")), (40, ("弱", "#fbbf24")),
-        (60, ("一般", "#60a5fa")), (80, ("強", "#8b5cf6")), (101, ("極強", "#ef4444"))
+        (20, ("極弱", "#9ca3af")),
+        (40, ("弱", "#fbbf24")),
+        (60, ("一般", "#60a5fa")),
+        (80, ("強", "#8b5cf6")),
+        (101, ("極強", "#ef4444"))
     ]
+
     label, color = "一般", "#60a5fa"
     for limit, info in level_map:
         if score <= limit:
@@ -102,255 +115,150 @@ def draw_influence_bar(current_val, df, target_col="權重值"):
 
 
 def get_short_label(url):
-    if not url.startswith("http"): return url
+    if not url.startswith("http"):
+        return url
     parsed = urlparse(url)
     path_parts = [p for p in parsed.path.split("/") if p]
-    if path_parts: return unquote(cc.convert(path_parts[-1]))
+    if path_parts:
+        return unquote(cc.convert(path_parts[-1]))
     return unquote(cc.convert(parsed.netloc))
 
 
-# --- 3. 方向 A：輕量級 IG 公開網頁真實資料解析引擎 ---
-def analyze_real_ig_public_profile(username):
+# --- 3. 方向A：真實公開資料抓取層 ---
+def fetch_real_ig_public_data(username):
     """
-    利用公開的 Instagram 頁面進行輕量級合法爬取 (非侵入式)，
-    若遇到官方防火牆阻擋，則啟動特徵比對估算，確保 100% 不會噴錯。
+    嘗試抓取 Instagram 帳號公開頁面的 meta 標籤資訊。
+    這只能取得「公開、未登入狀態下可見」的基本摘要資料，
+    若 IG 端阻擋（常見），則回傳 None，由上層改用模擬估算。
     """
     url = f"https://www.instagram.com/{username}/"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Safari/537.36",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
     }
-    
-    # 預設真實觀測欄位值
-    real_data = {
-        "has_avatar": True,          # 是否有頭像
-        "bio_length": 0,             # 簡介字數
-        "username_has_serial": False,# 名字是否帶有網軍常見連號數字
-        "is_status_code_ok": False   # 判定是否有順利連線
+
+    result = {
+        "fetch_success": False,
+        "raw_followers": None,
+        "raw_following": None,
+        "raw_posts": None,
+        "bio_length": 0,
+        "has_avatar": None,
+        "page_title": None,
+        "source_note": "",
     }
-    
-    # 檢查名字是否帶有反常數字特徵 (例如: john1234, bot9988)
-    if re.search(r'\d{3,}', username):
-        real_data["username_has_serial"] = True
-        
+
     try:
-        res = requests.get(url, headers=headers, timeout=4)
-        if res.status_code == 200:
-            real_data["is_status_code_ok"] = True
-            soup = BeautifulSoup(res.text, 'html.parser')
-            
-            # 嘗試抓取 Meta Description 中的真實簡介與粉絲概況
-            meta_desc = soup.find("meta", property="og:description")
-            if meta_desc and meta_desc.get("content"):
-                desc_text = meta_desc["content"]
-                real_data["bio_length"] = len(desc_text)
-                
-            # 檢查是否有大頭貼標籤特徵
-            meta_img = soup.find("meta", property="og:image")
-            if meta_img and "anonymous_user" in meta_img.get("content", ""):
-                real_data["has_avatar"] = False
-    except:
-        pass # 網路異常或阻擋時，保持預設常態值
-        
-    return real_data
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code != 200:
+            result["source_note"] = f"無法存取頁面（HTTP {resp.status_code}），可能為私人帳號、不存在或遭到限流。"
+            return result
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # og:description 範例文字: "1.2M Followers, 350 Following, 120 Posts - See Instagram photos and videos from XXX"
+        og_desc_tag = soup.find("meta", property="og:description")
+        og_title_tag = soup.find("meta", property="og:title")
+        og_image_tag = soup.find("meta", property="og:image")
+
+        if og_title_tag:
+            result["page_title"] = og_title_tag.get("content", "")
+
+        if og_image_tag:
+            img_url = og_image_tag.get("content", "")
+            # 預設大頭貼網址通常含 default 字樣，或回傳的是通用佔位圖
+            result["has_avatar"] = bool(img_url) and "44884218_345707102882519_2446069589734326272_n" not in img_url
+
+        if og_desc_tag:
+            desc = og_desc_tag.get("content", "")
+
+            def parse_count(text):
+                text = text.strip().upper()
+                multiplier = 1
+                if text.endswith("K"):
+                    multiplier = 1_000
+                    text = text[:-1]
+                elif text.endswith("M"):
+                    multiplier = 1_000_000
+                    text = text[:-1]
+                elif text.endswith("B"):
+                    multiplier = 1_000_000_000
+                    text = text[:-1]
+                try:
+                    return int(float(text.replace(",", "")) * multiplier)
+                except:
+                    return None
+
+            m = re.search(r"([\d.,]+[KMB]?)\s*Followers,\s*([\d.,]+[KMB]?)\s*Following,\s*([\d.,]+[KMB]?)\s*Posts", desc)
+            if m:
+                result["raw_followers"] = parse_count(m.group(1))
+                result["raw_following"] = parse_count(m.group(2))
+                result["raw_posts"] = parse_count(m.group(3))
+                result["fetch_success"] = True
+
+            # 簡介通常接在 "Posts - " 之後
+            bio_part = desc.split(" - ", 1)
+            if len(bio_part) > 1:
+                result["bio_length"] = len(bio_part[1])
+
+        if not result["fetch_success"]:
+            result["source_note"] = "頁面已成功連線，但 IG 並未回傳粉絲數摘要（常見於需登入才能檢視的帳號）。"
+        else:
+            result["source_note"] = "成功從 Instagram 公開頁面 meta 資訊解析出基本統計數據。"
+
+    except Exception as e:
+        result["source_note"] = f"連線發生例外狀況：{e}"
+
+    return result
 
 
-# --- Streamlit 介面配置 ---
+# --- Streamlit 主介面配置 ---
 st.set_page_config(page_title="多維度圖譜安全與影響力分析儀表板", layout="wide")
 
-tab1, tab2 = st.tabs(["🕸️ 網頁 PageRank 分析", "📸 IG 英雄榜：混合真實數據之社交死網測謊儀"])
+tab1, tab2 = st.tabs(["🕸️ 網頁 PageRank 分析", "📸 IG 英雄榜：大數據社交死網測謊儀"])
 
 
-# --- TAB 2: IG 假帳號混合反詐系統 (方向 A + 方向 C 完美整合 Bug修復版) ---
-with tab2:
-    st.title("📸 Instagram 混合式大數據拓樸防詐測謊儀")
-    
-    st.notice("💡 **[系統架構宣導：演示與教育用途標示]**\n"
-              "本儀表板採用 **混合式反網軍識別模型**：前端整合 **[方向 A] Instagram 公開頁面特徵偵測機制**"
-              "；後端下游網絡則採用 **[方向 C] 大數據社交死網拓樸模擬演算法**。旨在透過真實可得的公開特徵作為引子，"
-              "完美演示項目小組基於 **PageRank（圖論信任傳遞）** 識別機器人暗網、互粉網軍集團的核心方法論。")
+# --- TAB 1: 網頁影響力分析系統 ---
+with tab1:
+    st.title("🕸️ 網頁影響力 PageRank 分析系統")
 
-    st.subheader("🤖 一鍵式創作者健康度與下游節點分析")
-    # 提醒使用者輸入 帳號 ID (Username)
-    raw_user_input = st.text_input("請輸入要稽核的 Instagram 帳號 ID (例如: f1 或 johnlin_2449)：", value="johnlin_2449")
-    clean_user_id = raw_user_input.strip().replace("@", "")
+    if "G" not in st.session_state:
+        st.session_state.G = None
+    if "df" not in st.session_state:
+        st.session_state.df = None
 
-    if st.button("🚀 開始多維度混合測謊分析", type="primary"):
-        if not clean_user_id:
-            st.warning("請先輸入有效的 Instagram 帳號。")
-        else:
-            with st.spinner("正在執行 [方向 A] 真實公開特徵爬取 ＆ [方向 C] 下游 PageRank 拓樸疊代運算..."):
-                
-                # 執行方向 A：抓取真實資料
-                real_profile = analyze_real_ig_public_profile(clean_user_id)
-                time.sleep(0.5) 
-                
-                # 建立穩定雜湊種子
-                hash_seed = int(hashlib.md5(clean_user_id.encode('utf-8')).hexdigest(), 16) % (10**8)
-                random.seed(hash_seed)
-                
-                base_followers = random.randint(15000, 220000)
-                base_following = random.randint(300, 4200)
-                
-                is_suspicious_base = real_profile["username_has_serial"] or (real_profile["bio_length"] == 0)
-                
-                if is_suspicious_base:
-                    is_malicious = (random.random() < 0.75)
-                else:
-                    is_malicious = (hash_seed % 3 == 0)
-                
-                if is_malicious:
-                    base_er = round(random.uniform(0.12, 0.58), 2)
-                    p_private = random.randint(65, 88)
-                    p_no_avatar = random.randint(45, 80)
-                else:
-                    base_er = round(random.uniform(2.3, 6.1), 2)
-                    p_private = random.randint(12, 28)
-                    p_no_avatar = random.randint(3, 12)
-                
-                # 舞弊量化計算
-                risk_score = 0
-                risk_details = []
-                
-                if real_profile["username_has_serial"]:
-                    risk_score += 15
-                    risk_details.append("❌ **[真實觀測] 帳號名稱特徵異常**：該 ID 尾端帶有大量連續或隨機數字，極符合批量自動化腳本註冊之命名學邏輯。")
-                else:
-                    risk_details.append("✅ **[真實觀測] 帳號名稱常態**：ID 未發現大批量腳本註冊的規律連號數字。")
-                    
-                if real_profile["bio_length"] == 0:
-                    risk_score += 10
-                    risk_details.append("❌ **[真實觀測] 自我介紹空白**：該帳號完全未填寫任何個人簡介，符合殭屍帳號與短期臨時工網軍不注重個資維護的行為。")
-                else:
-                    risk_details.append(f"✅ **[真實觀測] 個人簡介維護正常**：偵測到真實公開簡介內容，長度約 {real_profile['bio_length']} 字。")
+    with st.sidebar:
+        st.header("⚙️ 分析設定")
+        start_url = st.text_input("起始網址", value="https://zh.wikipedia.org")
+        max_links = st.slider("每層爬取上限", 5, 100, 25)
+        max_layers = st.slider("搜尋層數 (深度)", 1, 3, 2)
+        alpha = st.slider("阻尼係數 (Alpha)", 0.0, 1.0, 0.85)
+        analyze_btn = st.button("開始執行深度分析")
 
-                ff_ratio = base_following / (base_followers / 100)
-                if ff_ratio > 25:
-                    risk_score += 25
-                    risk_details.append("❌ **[拓樸模擬] 結構出入度失衡**：追蹤中與粉絲比例嚴重倒置，具備強烈群發水軍或互粉集團死網特徵。")
-                    
-                if base_followers > 50000 and base_er < 0.9:
-                    risk_score += 30
-                    risk_details.append(f"❌ **[動態模擬] 互動率嚴重低落**：粉絲規模高達 {base_followers:,}，但互動率僅 {base_er}%（遠低於標準 1.0%），判斷存在大量幽靈死帳號。")
-                elif base_followers <= 50000 and base_er < 1.3:
-                    risk_score += 20
-                    risk_details.append(f"❌ **[動態模擬] 黏著度低於基礎線**：中小型創作者互動率僅 {base_er}%，有明顯人為注水、買讚嫌疑。")
+    if analyze_btn:
+        with st.spinner("正在進行高效並行爬取..."):
+            G_res = crawl_web_parallel(start_url, max_links, max_layers)
+            pagerank_scores = nx.pagerank(G_res, alpha=alpha)
 
-                if p_no_avatar > 30:
-                    risk_score += 20
-                    risk_details.append(f"❌ **[集群模擬] 幽靈集群密集**：下游隨機抽樣中高達 {p_no_avatar}% 屬於無頭貼之低階高危自動化機器人。")
-                    
-                risk_score = min(risk_score, 100)
+            df_res = pd.DataFrame(
+                [
+                    {"網址": cc.convert(k), "權重值": v}
+                    for k, v in pagerank_scores.items()
+                ]
+            )
+            df_res = df_res.sort_values(by="權重值", ascending=False).reset_index(drop=True)
 
-                # --- 🦾 修正後的擬真 IG 帳號生成引擎（100% 不噴錯） ---
-                first_names = ['vicky', 'kevin', 'jason', 'crypto', 'travel', 'daily', 'amy', 'sharon', 'alex', 'lucas', 'tom', 'emily', 'yuki', 'hannah', 'jack', 'peter', 'lisa', 'olivia', 'ryan']
-                last_words = ['_shop', '99', '_official', 'king', '_life', '1024', '_deal', 'beauty', '888', '_fan', 'studio', '_tech', '01', 'prod']
-                random_letters = ['abc', 'zxcv', 'qwerty', 'asd', 'dfgh']
-                
-                total_sample_count = 30
-                bot_count = max(1, min(int(p_no_avatar / 100 * total_sample_count), 26))
-                normal_count = total_sample_count - bot_count
-                
-                all_followers_names = []
-                
-                # 生成假粉 ID
-                for _ in range(bot_count):
-                    b_name = f"{random.choice(random_letters)}_{random.choice(first_names)}{random.randint(10,999)}{random.choice(last_words)}"
-                    all_followers_names.append((b_name, "高危機器人"))
-                    
-                # 生成正常粉 ID (修正了原本隨機選擇空序列的語法 bug)
-                for _ in range(normal_count):
-                    connector = random.choice(['_', '.', ''])
-                    suffix = random.choice(last_words) if random.random() > 0.5 else str(random.randint(11, 99))
-                    n_name = f"{random.choice(first_names)}{connector}{suffix}"
-                    all_followers_names.append((n_name, "正常真實用戶"))
-                
-                # --- 圖論關係拓樸網絡建構 ---
-                IG_G = nx.DiGraph()
-                main_node_display = f"@{clean_user_id}"
-                bot_only_list = [item[0] for item in all_followers_names if item[1] == "高危機器人"]
-                
-                for f_name, f_type in all_followers_names:
-                    IG_G.add_edge(f_name, main_node_display)
-                    if f_type == "高危機器人" and len(bot_only_list) > 1 and random.random() > 0.4:
-                        target_b = random.choice(bot_only_list)
-                        if f_name != target_b:
-                            IG_G.add_edge(f_name, target_b)
-                            
-                ig_pagerank = nx.pagerank(IG_G, alpha=0.85)
-                
-                type_map = {main_node_display: "主審查標的"}
-                for name, t_type in all_followers_names: type_map[name] = t_type
-                    
-                ig_df = pd.DataFrame([
-                    {"下游 IG 帳號": k, "PageRank 權重值": v, "帳號屬性判定": type_map.get(k, "未知節點")}
-                    for k, v in ig_pagerank.items()
-                ]).sort_values(by="PageRank 權重值", ascending=False).reset_index(drop=True)
-                
-                # --- 📊 介面數據視覺化呈現 ---
-                st.divider()
-                st.header(f"📊 混合多維度安全稽核報告：`@{clean_user_id}`")
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric("估算全網粉絲基數", f"{base_followers:,} Followers")
-                m2.metric("真實公開探針檢索狀態", "SUCCESS (200)" if real_profile["is_status_code_ok"] else "TIMEOUT (BYPASS)")
-                m3.metric("健康信賴互動率 (ER)", f"{base_er}%")
-                
-                if risk_score >= 65:
-                    st.error(f"🚨 **綜合判定：高危帳號 (存在集團式舞弊風險)** | 舞弊風險指數：{risk_score}%")
-                elif risk_score >= 35:
-                    st.warning(f"⚠️ **綜合判定：中度異常 (存在部分低質量灌水粉絲)** | 舞弊風險指數：{risk_score}%")
-                else:
-                    st.success(f"✅ **綜合判定：健康帳號 (社交表現一切正常)** | 舞弊風險指數：{risk_score}%")
-                st.progress(risk_score / 100)
-                
-                col_left, col_right = st.columns([1, 1])
-                with col_left:
-                    st.subheader("🔬 [真實 A + 模擬 C] 混合稽核判定細項")
-                    for detail in risk_details:
-                        st.markdown(detail)
-                    
-                    st.subheader("🏆 下游節點 PageRank 權重分佈排行")
-                    st.dataframe(ig_df.head(10), use_container_width=True)
-                    
-                with col_right:
-                    st.subheader("📊 全域節點屬性權重佔比")
-                    fig_ig_pie = px.pie(
-                        ig_df, values="PageRank 權重值", names="帳號屬性判定", hole=0.4,
-                        color="帳號屬性判定",
-                        color_discrete_map={"主審查標的": "#ef4444", "高危機器人": "#ffb74d", "正常真實用戶": "#60a5fa"}
-                    )
-                    st.plotly_chart(fig_ig_pie, use_container_width=True)
-                    
-                st.subheader("🌳 下游社交關係拓樸圖 (自動化設備集團死網識別)")
-                st.info("💡 圖例說明：🔴 紅色為主審查帳號；🟠 橘色為演算法揪出的「高危假帳號集群」；🔵 藍色為正常用戶。")
-                
-                net_ig = Network(height="550px", width="100%", bgcolor="#f8fafc", font_color="#1e293b", directed=True)
-                for _, row in ig_df.iterrows():
-                    node_id = row["下游 IG 帳號"]
-                    attr = row["帳號屬性判定"]
-                    n_color = "#ef4444" if attr == "主審查標的" else ("#ffb74d" if attr == "高危機器人" else "#60a5fa")
-                    n_size = 40 if attr == "主審查標的" else 20
-                    net_ig.add_node(node_id, label=node_id, size=n_size, color=n_color)
-                    
-                for u, v in IG_G.edges():
-                    net_ig.add_edge(u, v, color="#cbd5e1", arrows="to")
-                    
-                net_ig.toggle_physics(True)
-                net_ig.set_options('{"physics": {"forceAtlas2Based": {"gravitationalConstant": -60, "centralGravity": 0.015, "springLength": 100}, "solver": "forceAtlas2Based"}}')
-                
-                try:
-                    net_ig.save_graph("ig_graph.html")
-                    with open("ig_graph.html", "r", encoding="utf-8") as f:
-                        components.html(f.read(), height=570)
-                except:
-                    st.error("社群拓樸圖渲染失敗。")
+            st.session_state.G = G_res
+            st.session_state.df = df_res
 
     if st.session_state.df is not None:
         df = st.session_state.df
         G = st.session_state.G
+
         st.divider()
         st.title("🎯 PageRank 數據深度分析報告")
+
+        st.header("🏆 全域權重特徵")
         st.subheader("📌 全域權重值排名 (Top 10)")
         display_df = df.head(10).copy()
         display_df.insert(0, "網頁名稱", display_df["網址"].apply(get_short_label))
@@ -365,202 +273,272 @@ with tab2:
         st.divider()
         st.header("🔍 核心節點深入追蹤")
         selected_site = st.selectbox("請選擇欲分析的網頁：", df["網址"].tolist())
+
         current_weight = df.loc[df["網址"] == selected_site, "權重值"].values[0]
         draw_influence_bar(current_weight, df)
 
+        st.subheader("📍 下游連結權重分佈")
+        chart_type = st.radio("選擇統計圖表類型：", ["直方圖", "折線圖", "圓餅圖"], horizontal=True, key="web_chart")
 
-# --- TAB 2: IG 假帳號混合反詐系統 (方向 A + 方向 C 完美整合版) ---
+        successors = list(G.successors(selected_site)) if selected_site in G else []
+        if successors:
+            sub_df = df[df["網址"].isin([cc.convert(s) for s in successors])].copy()
+            sub_df["顯示名稱"] = sub_df["網址"].apply(get_short_label)
+            sub_df = sub_df.sort_values(by="權重值", ascending=False)
+
+            if chart_type == "直方圖":
+                fig_sub = px.bar(sub_df, x="顯示名稱", y="權重值", title="下游網頁權重直方圖", color="權重值", color_continuous_scale="Blues")
+            elif chart_type == "折線圖":
+                fig_sub = px.line(sub_df, x="顯示名稱", y="權重值", title="下游網頁權重趨勢圖", markers=True)
+            else:
+                fig_sub = px.pie(sub_df, values="權重值", names="顯示名稱", title="下游網頁權重佔比圓餅圖", hole=0.3)
+
+            st.plotly_chart(fig_sub, use_container_width=True)
+
+
+# --- TAB 2: IG 帳號健康度與死網拓樸演示系統（真實前端 + 演算法模擬後台） ---
 with tab2:
-    st.title("📸 Instagram 混合式大數據拓樸防詐測謊儀")
-    
-    # 核心亮點：C 面向的誠實教育標籤，完美迴避數據真實性的刁難，更顯專業
-    st.notice("💡 **[系統架構宣導：演示與教育用途標示]**\n"
-              "本儀表板採用 **混合式反網軍識別模型**：前端整合 **[方向 A] Instagram 公開頁面特徵偵測機制**"
-              "；後端下游網絡則採用 **[方向 C] 大數據社交死網拓樸模擬演算法**。旨在透過真實可得的公開特徵作為引子，"
-              "完美演示項目小組基於 **PageRank（圖論信任傳遞）** 識別機器人暗網、互粉網軍集團的核心方法論。")
+    st.title("📸 Instagram 帳號健康度圖譜分析儀")
+    st.markdown("""
+    ### 🛡️ 雙層架構：真實公開數據 × PageRank 拓樸模擬
+    - **第一層（✅ 真實數據）**：透過合法、免金鑰的方式解析該帳號 Instagram 公開頁面的基本特徵（粉絲規模、頭像狀態、簡介長度等）。
+    - **第二層（🧪 演算法模擬）**：以第一層抓到的真實特徵作為「種子」，推導出對應規模的下游粉絲拓樸網絡，用於展示 PageRank 死網識別演算法的運作邏輯。
+    """)
+    st.caption("⚠️ 本系統下半部分的「下游粉絲拓樸圖」為演算法概念演示，並非真實爬取個別粉絲帳號，僅供教學與技術展示使用。")
 
-    st.subheader("🤖 一鍵式創作者健康度與下游節點分析")
-    raw_user_input = st.text_input("請輸入要稽核的 Instagram 帳號 ID (不論是否加 @ 均能精準鎖定)：", value="johnlin_2449")
-    clean_user_id = raw_user_input.strip().replace("@", "")
+    raw_user_input = st.text_input("請輸入要稽核的 Instagram 帳號 ID（不論是否加 @ 均可）：", value="instagram")
+    clean_user_id = raw_user_input.strip().replace("@", "").replace(" ", "")
 
-    if st.button("🚀 開始多維度混合測謊分析", type="primary"):
+    if st.button("🚀 開始分析", type="primary"):
         if not clean_user_id:
             st.warning("請先輸入有效的 Instagram 帳號。")
         else:
-            with st.spinner("正在執行 [方向 A] 真實公開特徵爬取 ＆ [方向 C] 下游 PageRank 拓樸疊代運算..."):
-                
-                # 執行方向 A：抓取真實資料
-                real_profile = analyze_real_ig_public_profile(clean_user_id)
-                time.sleep(1.0) # 確保優雅的執行節奏
-                
-                # 基於乾淨 ID 建立雜湊種子，確保同一個帳號跑出來的模擬大數據絕對穩定一致
-                hash_seed = int(hashlib.md5(clean_user_id.encode('utf-8')).hexdigest(), 16) % (10**8)
+            # --- 第一層：真實公開資料抓取 ---
+            with st.spinner("正在連線 Instagram 解析公開頁面資訊..."):
+                real_data = fetch_real_ig_public_data(clean_user_id)
+
+            st.divider()
+            st.header("✅ 第一層：真實公開資料")
+
+            if real_data["fetch_success"]:
+                st.success(f"資料來源：{real_data['source_note']}")
+                rc1, rc2, rc3, rc4 = st.columns(4)
+                rc1.metric("真實粉絲數", f"{real_data['raw_followers']:,}")
+                rc2.metric("真實追蹤數", f"{real_data['raw_following']:,}")
+                rc3.metric("真實貼文數", f"{real_data['raw_posts']:,}")
+                rc4.metric("簡介字數", f"{real_data['bio_length']} 字")
+                base_followers = real_data["raw_followers"] or 0
+                base_following = real_data["raw_following"] or 0
+                has_avatar_real = real_data["has_avatar"]
+                seed_text = f"{clean_user_id}_{base_followers}"
+            else:
+                st.info(f"⚠️ {real_data['source_note']} 系統將改用帳號名稱推算特徵，後續拓樸圖仍為模擬資料。")
+                base_followers = None
+                base_following = None
+                has_avatar_real = real_data["has_avatar"]
+                seed_text = clean_user_id
+
+            st.divider()
+            st.header("🧪 第二層：PageRank 下游拓樸模擬")
+
+            with st.spinner("正在以真實特徵為種子，推導下游粉絲拓樸網絡..."):
+                time.sleep(0.8)
+
+                # 用真實資料（若有）或帳號名稱作為穩定隨機種子
+                hash_seed = int(hashlib.md5(seed_text.encode("utf-8")).hexdigest(), 16) % (10**8)
                 random.seed(hash_seed)
-                
-                # 系統全自動推算基礎背景大數據
-                base_followers = random.randint(15000, 220000)
-                base_following = random.randint(300, 4200)
-                
-                # 結合真實數據判定：如果真實偵測到名字帶有連號數字，或者完全沒有簡介，則大幅拉高它是機器人的基礎機率！
-                is_suspicious_base = real_profile["username_has_serial"] or (real_profile["bio_length"] == 0)
-                
-                # 綜合決定這個種子是「健康帳號」還是「問題注水戶」
-                if is_suspicious_base:
-                    is_malicious = (random.random() < 0.75) # 75%機率判定異常
-                else:
-                    is_malicious = (hash_seed % 3 == 0) # 常態 1/3 機率
-                
-                # 依據判定結果配置後台大數據模擬權重
+
+                # 若有真實粉絲數則直接採用，否則才用隨機估算
+                if base_followers is None:
+                    base_followers = random.randint(1000, 200000)
+                if base_following is None:
+                    base_following = random.randint(100, 5000)
+
+                ff_ratio = base_following / (base_followers / 100) if base_followers > 0 else 999
+
+                # 用真實 ff_ratio、頭像狀態作為異常判定的引子，而非純隨機
+                anomaly_score_seed = 0
+                if ff_ratio > 25:
+                    anomaly_score_seed += 1
+                if has_avatar_real is False:
+                    anomaly_score_seed += 1
+                if real_data.get("bio_length", 0) == 0:
+                    anomaly_score_seed += 1
+
+                is_malicious = anomaly_score_seed >= 2 or (anomaly_score_seed == 0 and hash_seed % 5 == 0)
+
                 if is_malicious:
-                    base_er = round(random.uniform(0.12, 0.58), 2)
-                    p_private = random.randint(65, 88)
-                    p_no_avatar = random.randint(45, 80)
-                    p_bot_comment = random.randint(55, 85)
+                    base_er = round(random.uniform(0.15, 0.65), 2)
+                    p_private = random.randint(60, 85)
+                    p_no_avatar = random.randint(40, 75)
+                    p_bot_comment = random.randint(50, 80)
                 else:
-                    base_er = round(random.uniform(2.3, 6.1), 2)
-                    p_private = random.randint(12, 28)
-                    p_no_avatar = random.randint(3, 12)
-                    p_bot_comment = random.randint(1, 8)
-                
-                # --- 🔬 混合特徵反舞弊量化演算法 ---
+                    base_er = round(random.uniform(2.1, 5.8), 2)
+                    p_private = random.randint(15, 30)
+                    p_no_avatar = random.randint(4, 15)
+                    p_bot_comment = random.randint(2, 10)
+
+                # --- 反舞弊演算法特徵判定 ---
                 risk_score = 0
                 risk_details = []
-                
-                # [方向 A 真實指標 1]: 檢查帳號名稱命名學
-                if real_profile["username_has_serial"]:
-                    risk_score += 15
-                    risk_details.append("❌ **[真實觀測] 帳號名稱特徵異常**：該 ID 尾端帶有大量連續或隨機數字，極符合批量自動化腳本註冊之命名學邏輯。")
-                else:
-                    risk_details.append("✅ **[真實觀測] 帳號名稱常態**：ID 未發現大批量腳本註冊的規律連號數字。")
-                    
-                # [方向 A 真實指標 2]: 檢查主頁簡介豐富度
-                if real_profile["bio_length"] == 0:
-                    risk_score += 10
-                    risk_details.append("❌ **[真實觀測] 自我介紹空白**：該帳號完全未填寫任何個人簡介，符合殭屍帳號與短期臨時工網軍不注重個資維護的行為。")
-                else:
-                    risk_details.append(f"✅ **[真實觀測] 個人簡介維護正常**：偵測到真實公開簡介內容，長度約 {real_profile['bio_length']} 字。")
 
-                # [方向 C 圖論指標 3]: 結構拓樸出入度比值
-                ff_ratio = base_following / (base_followers / 100)
                 if ff_ratio > 25:
                     risk_score += 25
-                    risk_details.append("❌ **[拓樸模擬] 結構出入度失衡**：追蹤中與粉絲比例嚴重倒置，具備強烈群發水軍或互粉集團死網特徵。")
-                    
-                # [方向 C 圖論指標 4]: 真實互動率 (ER)
+                    risk_details.append("❌ **結構拓樸反常**：該帳號的「追蹤中」與粉絲比值嚴重失衡，具備強烈互粉集團特徵。")
+
                 if base_followers > 50000 and base_er < 0.9:
                     risk_score += 30
-                    risk_details.append(f"❌ **[動態模擬] 互動率嚴重低落**：粉絲規模高達 {base_followers:,}，但互動率僅 {base_er}%（遠低於標準 1.0%），判斷存在大量幽靈死帳號。")
+                    risk_details.append(f"❌ **動態黏著度低落**：相較於其高達 {base_followers:,} 的粉絲規模，模擬互動率僅有 {base_er}%，研判下游存在大量殭屍帳號。")
                 elif base_followers <= 50000 and base_er < 1.3:
-                    risk_score += 20
-                    risk_details.append(f"❌ **[動態模擬] 黏著度低於基礎線**：中小型創作者互動率僅 {base_er}%，有明顯人為注水、買讚嫌疑。")
+                    risk_score += 25
+                    risk_details.append(f"❌ **動態黏著度低落**：中小型創作者模擬互動率僅有 {base_er}%，未達健康基礎線 1.3%。")
 
-                if p_no_avatar > 30:
+                if p_private > 55:
+                    risk_score += 15
+                    risk_details.append(f"❌ **高密度隱私屏蔽**：模擬下游抽樣中，高達 {p_private}% 為私密帳號。")
+                if p_no_avatar > 25:
                     risk_score += 20
-                    risk_details.append(f"❌ **[集群模擬] 幽靈集群密集**：下游隨機抽樣中高達 {p_no_avatar}% 屬於無頭貼之低階高危自動化機器人。")
-                    
+                    risk_details.append(f"❌ **幽靈集群密集**：模擬下游節點有 {p_no_avatar}% 屬於無大頭貼、亂碼 ID 的低階自動化帳號特徵。")
+                if p_bot_comment > 35:
+                    risk_score += 10
+                    risk_details.append(f"❌ **語意罐頭化**：模擬留言區高達 {p_bot_comment}% 充斥無意義極短字眼。")
+
+                if has_avatar_real is False:
+                    risk_score += 10
+                    risk_details.append("❌ **主帳號未設定頭像**：真實抓取結果顯示該帳號無自訂大頭貼，常見於低活躍度或新建帳號。")
+
                 risk_score = min(risk_score, 100)
 
-                # --- 🤖 仿真真實 IG 帳號生成引擎 (徹底告別 bot_1234) ---
-                first_names = ['vicky', 'kevin', 'jason', 'crypto', 'travel', 'daily', 'amy', 'sharon', 'alex', 'lucas', 'tom', 'emily', 'yuki', 'hannah', 'jack', 'peter', 'lisa', 'olivia', 'ryan']
-                last_words = ['_shop', '99', '_official', 'king', '_life', '1024', '_deal', 'beauty', '888', '_fan', 'studio', '_tech', '01', 'prod']
+                # --- 模擬下游帳號名單生成 ---
+                first_names = ['vicky', 'kevin', 'jason', 'crypto', 'travel', 'daily', 'amy', 'sharon', 'alex', 'lucas', 'tom', 'emily', 'yuki', 'hannah', 'jack', 'peter', 'lisa']
+                last_words = ['_shop', '99', '_official', 'king', '_life', '1024', '_deal', 'beauty', '888', '_fan', 'studio', '_tech', '01', 'mx']
                 random_letters = ['abc', 'zxcv', 'qwerty', 'asd', 'dfgh']
-                
+
                 total_sample_count = 30
-                bot_count = max(1, min(int(p_no_avatar / 100 * total_sample_count), 26))
+                bot_count = int(p_no_avatar / 100 * total_sample_count)
+                bot_count = max(1, min(bot_count, 25))
                 normal_count = total_sample_count - bot_count
-                
+
                 all_followers_names = []
-                # 生成仿真假粉 ID
+
                 for _ in range(bot_count):
-                    b_name = f"{random.choice(random_letters)}_{random.choice(first_names)}{random.randint(10,999)}{random.choice(last_words)}"
-                    all_followers_names.append((b_name, "高危機器人"))
-                # 生成擬真正常粉 ID
+                    prefix = random.choice(random_letters)
+                    main_n = random.choice(first_names)
+                    suffix = random.choice(last_words)
+                    num = random.randint(100, 999)
+                    b_name = f"{prefix}_{main_n}{num}{suffix}"
+                    all_followers_names.append((b_name, "模擬高危特徵"))
+
                 for _ in range(normal_count):
-                    n_name = f"{random.choice(first_names)}{random.choice(['_', '.', ''])}{random.choice(last_words) if random.random()>0.5 else random.randint(11,99)}"
-                    all_followers_names.append((n_name, "正常真實用戶"))
-                
-                # --- 圖論關係拓樸網絡建構 ---
+                    main_n = random.choice(first_names)
+                    num_or_word = random.choice([str(random.randint(10, 99)), random.choice(last_words)])
+                    connector = random.choice(['_', '.', ''])
+                    n_name = f"{main_n}{connector}{num_or_word}"
+                    all_followers_names.append((n_name, "模擬正常用戶"))
+
+                # --- 圖論關係拓樸建構 ---
                 IG_G = nx.DiGraph()
                 main_node_display = f"@{clean_user_id}"
-                bot_only_list = [item[0] for item in all_followers_names if item[1] == "高危機器人"]
-                
+
+                bot_only_list = [item[0] for item in all_followers_names if item[1] == "模擬高危特徵"]
+
                 for f_name, f_type in all_followers_names:
                     IG_G.add_edge(f_name, main_node_display)
-                    # 網軍死網特性：假帳號彼此之間高機率產生封閉式互相追蹤
-                    if f_type == "高危機器人" and len(bot_only_list) > 1 and random.random() > 0.4:
+                    if f_type == "模擬高危特徵" and len(bot_only_list) > 1 and random.random() > 0.4:
                         target_b = random.choice(bot_only_list)
                         if f_name != target_b:
                             IG_G.add_edge(f_name, target_b)
-                            
+
                 ig_pagerank = nx.pagerank(IG_G, alpha=0.85)
-                
-                type_map = {main_node_display: "主審查標的"}
-                for name, t_type in all_followers_names: type_map[name] = t_type
-                    
+
+                type_map = {main_node_display: "主審查標的（真實帳號）"}
+                for name, t_type in all_followers_names:
+                    type_map[name] = t_type
+
                 ig_df = pd.DataFrame([
-                    {"下游 IG 帳號": k, "PageRank 權重值": v, "帳號屬性判定": type_map.get(k, "未知節點")}
-                    for k, v in ig_pagerank.items()
-                ]).sort_values(by="PageRank 權重值", ascending=False).reset_index(drop=True)
-                
-                # --- 📊 介面數據視覺化呈現 ---
-                st.divider()
-                st.header(f"📊 混合多維度安全稽核報告：`@{clean_user_id}`")
-                
-                # 頂部三大真實/宏觀指標
-                m1, m2, m3 = st.columns(3)
-                m1.metric("估算全網粉絲基數", f"{base_followers:,} Followers")
-                m2.metric("真實公開探針檢索狀態", "SUCCESS (200)" if real_profile["is_status_code_ok"] else "TIMEOUT (BYPASS)")
-                m3.metric("健康信賴互動率 (ER)", f"{base_er}%")
-                
-                # 綜合舞弊風險指數條
-                if risk_score >= 65:
-                    st.error(f"🚨 **綜合判定：高危帳號 (存在集團式舞弊風險)** | 舞弊風險指數：{risk_score}%")
-                elif risk_score >= 35:
-                    st.warning(f"⚠️ **綜合判定：中度異常 (存在部分低質量灌水粉絲)** | 舞弊風險指數：{risk_score}%")
-                else:
-                    st.success(f"✅ **綜合判定：健康帳號 (社交表現一切正常)** | 舞弊風險指數：{risk_score}%")
-                st.progress(risk_score / 100)
-                
-                # 左右分流
-                col_left, col_right = st.columns([1, 1])
-                with col_left:
-                    st.subheader("🔬 [真實 A + 模擬 C] 混合稽核判定細項")
+                    {
+                        "節點": k,
+                        "PageRank 權重值": v,
+                        "節點屬性": type_map.get(k, "未知節點")
+                    } for k, v in ig_pagerank.items()
+                ])
+                ig_df = ig_df.sort_values(by="PageRank 權重值", ascending=False).reset_index(drop=True)
+
+            # --- 數據儀表板前端呈現 ---
+            st.subheader(f"📊 綜合分析報告：`@{clean_user_id}`")
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("粉絲規模（真實/估算）", f"{base_followers:,} Followers")
+            m2.metric("追蹤中數（真實/估算）", f"{base_following:,}")
+            m3.metric("模擬互動率（演示）", f"{base_er}%")
+
+            if risk_score >= 70:
+                st.error(f"🚨 **判定結果：高風險特徵帳號** | 綜合風險指數（含模擬演示成分）：{risk_score}%")
+            elif risk_score >= 40:
+                st.warning(f"⚠️ **判定結果：中度異常特徵** | 綜合風險指數（含模擬演示成分）：{risk_score}%")
+            else:
+                st.success(f"✅ **判定結果：特徵表現正常** | 綜合風險指數（含模擬演示成分）：{risk_score}%")
+            st.progress(risk_score / 100)
+            st.caption("註：風險指數結合「真實抓取特徵」（如頭像、簡介、粉絲/追蹤比）與「演算法模擬特徵」（如互動率、下游殭屍帳號比例）。前者真實，後者為演示推導值，請勿作為實際商業決策依據。")
+
+            col_left, col_right = st.columns([1, 1])
+
+            with col_left:
+                st.subheader("🔬 判定依據細項")
+                if risk_details:
                     for detail in risk_details:
                         st.markdown(detail)
-                    
-                    st.subheader("🏆 下游節點 PageRank 權重分佈排行")
-                    st.dataframe(ig_df.head(10), use_container_width=True)
-                    
-                with col_right:
-                    st.subheader("📊 全域節點屬性權重佔比")
-                    fig_ig_pie = px.pie(
-                        ig_df, values="PageRank 權重值", names="帳號屬性判定", hole=0.4,
-                        color="帳號屬性判定",
-                        color_discrete_map={"主審查標的": "#ef4444", "高危機器人": "#ffb74d", "正常真實用戶": "#60a5fa"}
-                    )
-                    st.plotly_chart(fig_ig_pie, use_container_width=True)
-                    
-                # 網絡拓樸圖
-                st.subheader("🌳 下游社交關係拓樸圖 (自動化設備集團死網識別)")
-                st.info("💡 圖例說明：🔴 紅色為主審查帳號；🟠 橘色為演算法揪出的「高危假帳號集群」；🔵 藍色為正常用戶。")
-                
-                net_ig = Network(height="550px", width="100%", bgcolor="#f8fafc", font_color="#1e293b", directed=True)
-                for _, row in ig_df.iterrows():
-                    node_id = row["下游 IG 帳號"]
-                    attr = row["帳號屬性判定"]
-                    n_color = "#ef4444" if attr == "主審查標的" else ("#ffb74d" if attr == "高危機器人" else "#60a5fa")
-                    n_size = 40 if attr == "主審查標的" else 20
-                    net_ig.add_node(node_id, label=node_id, size=n_size, color=n_color)
-                    
-                for u, v in IG_G.edges():
-                    net_ig.add_edge(u, v, color="#cbd5e1", arrows="to")
-                    
-                net_ig.toggle_physics(True)
-                net_ig.set_options('{"physics": {"forceAtlas2Based": {"gravitationalConstant": -60, "centralGravity": 0.015, "springLength": 100}, "solver": "forceAtlas2Based"}}')
-                
-                try:
-                    net_ig.save_graph("ig_graph.html")
-                    with open("ig_graph.html", "r", encoding="utf-8") as f:
-                        components.html(f.read(), height=570)
-                except:
-                    st.error("社群拓樸圖渲染失敗。")
+                else:
+                    st.markdown("✨ **全指標表現正常**：各項真實與模擬維度均符合常態分佈。")
+
+                st.subheader("🏆 模擬下游節點 PageRank 排行")
+                st.dataframe(ig_df.head(10), use_container_width=True)
+
+            with col_right:
+                st.subheader("📊 模擬節點屬性權重佔比")
+                fig_ig_pie = px.pie(
+                    ig_df,
+                    values="PageRank 權重值",
+                    names="節點屬性",
+                    hole=0.4,
+                    color="節點屬性",
+                    color_discrete_map={
+                        "主審查標的（真實帳號）": "#ef4444",
+                        "模擬高危特徵": "#ffb74d",
+                        "模擬正常用戶": "#60a5fa"
+                    }
+                )
+                st.plotly_chart(fig_ig_pie, use_container_width=True)
+
+            st.subheader("🌳 模擬下游關係拓樸網絡圖")
+            st.info("💡 🔴 紅色為輸入的真實帳號；🟠 橘色為演算法模擬出的「高危特徵節點」；🔵 藍色為「模擬正常節點」。此圖為演算法概念演示。")
+
+            net_ig = Network(height="550px", width="100%", bgcolor="#f8fafc", font_color="#1e293b", directed=True)
+
+            for _, row in ig_df.iterrows():
+                node_id = row["節點"]
+                attr = row["節點屬性"]
+
+                n_color = "#ef4444" if "主審查" in attr else ("#ffb74d" if "高危" in attr else "#60a5fa")
+                n_size = 40 if "主審查" in attr else 20
+                net_ig.add_node(node_id, label=node_id, size=n_size, color=n_color)
+
+            for u, v in IG_G.edges():
+                net_ig.add_edge(u, v, color="#cbd5e1", arrows="to")
+
+            net_ig.toggle_physics(True)
+            net_ig.set_options('{"physics": {"forceAtlas2Based": {"gravitationalConstant": -60, "centralGravity": 0.015, "springLength": 100}, "solver": "forceAtlas2Based"}}')
+
+            try:
+                net_ig.save_graph("ig_graph.html")
+                with open("ig_graph.html", "r", encoding="utf-8") as f:
+                    components.html(f.read(), height=570)
+            except Exception:
+                st.error("拓樸圖渲染失敗。")
+
+            st.markdown("""
+            ---
+            💡 **方法論說明**：本系統第一層特徵（粉絲/追蹤比、頭像狀態、簡介內容）來自 Instagram 公開頁面的真實資料；
+            第二層下游拓樸圖則以這些真實特徵作為隨機種子，透過 PageRank 演算法推導出「符合該帳號規模特徵」的可能死網結構，
+            用於展示圖論在社交網絡異常偵測中的應用方式，**並非對個別粉絲帳號的真實調查**。
+            """)
