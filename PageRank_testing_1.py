@@ -314,6 +314,10 @@ with tab1:
                     for k, v in pagerank_scores.items()
                 ]
             )
+            # 修復：簡繁轉換後可能有不同原始網址被合併成同一顯示字串，
+            # 造成同一 x 軸標籤對應多個資料點（折線圖出現異常連線）。
+            # 此處依「網址」去重，同名取權重值最大者。
+            df_res = df_res.groupby("網址", as_index=False)["權重值"].max()
             df_res = df_res.sort_values(by="權重值", ascending=False).reset_index(drop=True)
 
             st.session_state.G = G_res
@@ -338,6 +342,93 @@ with tab1:
         fig_pie = px.pie(pie_df, values="權重值", names="網頁名稱", hole=0.4)
         st.plotly_chart(fig_pie, use_container_width=True)
 
+        # --- 新增：圖譜結構統計指標 ---
+        st.divider()
+        st.header("📐 圖譜結構統計")
+        num_nodes = G.number_of_nodes()
+        num_edges = G.number_of_edges()
+        density = nx.density(G)
+        avg_out_degree = (sum(dict(G.out_degree()).values()) / num_nodes) if num_nodes else 0
+
+        gc1, gc2, gc3, gc4 = st.columns(4)
+        gc1.metric("節點總數", f"{num_nodes:,}")
+        gc2.metric("連結總數", f"{num_edges:,}")
+        gc3.metric("圖密度", f"{density:.5f}")
+        gc4.metric("平均出度", f"{avg_out_degree:.2f}")
+        st.caption("圖密度越接近 1 代表節點間連結越緊密；平均出度反映每個網頁平均對外連結的數量，數值越高代表網站整體連結結構越發散。")
+
+        # --- 新增：HITS Hub / Authority 分析 ---
+        st.subheader("🧭 HITS Hub / Authority 雙重分析")
+        try:
+            hubs, authorities = nx.hits(G, max_iter=500)
+            hits_df = pd.DataFrame([
+                {
+                    "網址": cc.convert(k),
+                    "Hub 分數（導航樞紐）": hubs.get(k, 0),
+                    "Authority 分數（內容權威）": authorities.get(k, 0),
+                }
+                for k in G.nodes()
+            ])
+            hits_df = hits_df.groupby("網址", as_index=False).max()
+            hits_df["顯示名稱"] = hits_df["網址"].apply(get_short_label)
+
+            hc1, hc2 = st.columns(2)
+            with hc1:
+                top_hub = hits_df.sort_values(by="Hub 分數（導航樞紐）", ascending=False).head(8)
+                fig_hub = px.bar(top_hub, x="顯示名稱", y="Hub 分數（導航樞紐）", title="Top Hub 頁面（連向大量重要頁面的樞紐頁）", color="Hub 分數（導航樞紐）", color_continuous_scale="Purples")
+                st.plotly_chart(fig_hub, use_container_width=True)
+            with hc2:
+                top_auth = hits_df.sort_values(by="Authority 分數（內容權威）", ascending=False).head(8)
+                fig_auth = px.bar(top_auth, x="顯示名稱", y="Authority 分數（內容權威）", title="Top Authority 頁面（被大量重要頁面引用的內容頁）", color="Authority 分數（內容權威）", color_continuous_scale="Oranges")
+                st.plotly_chart(fig_auth, use_container_width=True)
+            st.caption("Hub 分數高的頁面通常是「目錄/導航型」頁面（如首頁、分類索引），Authority 分數高的頁面則是被大量其他頁面引用的「內容權威」頁面，兩者結合可協助判斷網站的資訊架構角色分布。")
+        except Exception:
+            st.info("此圖譜結構暫無法收斂計算 HITS 分數（可能因節點數過少或圖結構過於簡單）。")
+
+        # --- 新增：網頁關係拓樸網絡圖 ---
+        st.divider()
+        st.header("🌐 網頁關係拓樸網絡圖")
+        st.info("💡 節點大小與顏色深淺代表 PageRank 權重，僅顯示權重最高的前 40 個節點及其彼此間的連結關係，避免圖形過於密集。")
+
+        top_n = min(40, len(df))
+        top_nodes_display = set(df.head(top_n)["網址"].tolist())
+        # 建立「原始網址 -> 轉換後顯示網址」映射，篩選出對應的原始節點
+        orig_to_display = {n: cc.convert(n) for n in G.nodes()}
+        top_orig_nodes = {n for n, d in orig_to_display.items() if d in top_nodes_display}
+
+        sub_G = G.subgraph(top_orig_nodes)
+
+        net_web = Network(height="600px", width="100%", bgcolor="#f8fafc", font_color="#1e293b", directed=True)
+
+        weight_lookup = dict(zip(df["網址"], df["權重值"]))
+        max_weight = df["權重值"].max() if not df.empty else 1
+
+        for n in sub_G.nodes():
+            display_name = orig_to_display.get(n, n)
+            label = get_short_label(display_name)
+            w = weight_lookup.get(display_name, 0)
+            ratio = (w / max_weight) if max_weight > 0 else 0
+            size = 15 + ratio * 45
+            # 權重越高顏色越紅，越低越藍
+            r = int(96 + ratio * (239 - 96))
+            g_ = int(165 + ratio * (68 - 165))
+            b = int(250 + ratio * (68 - 250))
+            color = f"#{r:02x}{g_:02x}{b:02x}"
+            net_web.add_node(n, label=label, size=size, color=color, title=f"{display_name}\n權重值: {w:.5f}")
+
+        for u, v in sub_G.edges():
+            net_web.add_edge(u, v, color="#cbd5e1", arrows="to")
+
+        net_web.toggle_physics(True)
+        net_web.set_options('{"physics": {"forceAtlas2Based": {"gravitationalConstant": -60, "centralGravity": 0.01, "springLength": 120}, "solver": "forceAtlas2Based"}}')
+
+        try:
+            net_web.save_graph("web_graph.html")
+            with open("web_graph.html", "r", encoding="utf-8") as f:
+                components.html(f.read(), height=620)
+        except Exception:
+            st.error("網頁拓樸圖渲染失敗。")
+
         st.divider()
         st.header("🔍 核心節點深入追蹤")
         selected_site = st.selectbox("請選擇欲分析的網頁：", df["網址"].tolist())
@@ -352,12 +443,16 @@ with tab1:
         if successors:
             sub_df = df[df["網址"].isin([cc.convert(s) for s in successors])].copy()
             sub_df["顯示名稱"] = sub_df["網址"].apply(get_short_label)
-            sub_df = sub_df.sort_values(by="權重值", ascending=False)
+            # 修復：不同網址經短名轉換後可能產生相同「顯示名稱」，
+            # 導致 x 軸出現重複分類、折線圖連線錯亂。同名取權重值最大者。
+            sub_df = sub_df.groupby("顯示名稱", as_index=False)["權重值"].max()
+            sub_df = sub_df.sort_values(by="權重值", ascending=False).reset_index(drop=True)
 
             if chart_type == "直方圖":
                 fig_sub = px.bar(sub_df, x="顯示名稱", y="權重值", title="下游網頁權重直方圖", color="權重值", color_continuous_scale="Blues")
             elif chart_type == "折線圖":
                 fig_sub = px.line(sub_df, x="顯示名稱", y="權重值", title="下游網頁權重趨勢圖", markers=True)
+                fig_sub.update_xaxes(type="category")
             else:
                 fig_sub = px.pie(sub_df, values="權重值", names="顯示名稱", title="下游網頁權重佔比圓餅圖", hole=0.3)
 
