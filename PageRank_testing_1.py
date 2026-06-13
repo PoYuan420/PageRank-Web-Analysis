@@ -131,12 +131,6 @@ def fetch_real_ig_public_data(username):
     這只能取得「公開、未登入狀態下可見」的基本摘要資料，
     若 IG 端阻擋（常見），則回傳 None，由上層改用模擬估算。
     """
-    url = f"https://www.instagram.com/{username}/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Safari/537.36",
-        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    }
-
     result = {
         "fetch_success": False,
         "raw_followers": None,
@@ -148,10 +142,83 @@ def fetch_real_ig_public_data(username):
         "source_note": "",
     }
 
+    # 行動版 User-Agent 池，模擬一般手機瀏覽器（降低被識別為爬蟲的機率）
+    mobile_uas = [
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 14; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+    ]
+
+    common_headers = {
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "User-Agent": random.choice(mobile_uas),
+    }
+
+    # --- 方法一：IG 網頁前端內部使用的 web_profile_info 公開 API ---
+    # 這個端點是 instagram.com 網頁版前端本身用來載入個人頁資料的請求，
+    # 帶上 x-ig-app-id（IG 官方網頁固定使用的公開 App ID）成功率較高。
+    api_url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
+    api_headers = {
+        **common_headers,
+        "x-ig-app-id": "936619743392459",
+        "Accept": "*/*",
+        "Referer": f"https://www.instagram.com/{username}/",
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(api_url, headers=api_headers, timeout=6)
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    user = data.get("data", {}).get("user")
+                    if user:
+                        result["raw_followers"] = user.get("edge_followed_by", {}).get("count")
+                        result["raw_following"] = user.get("edge_follow", {}).get("count")
+                        result["raw_posts"] = user.get("edge_owner_to_timeline_media", {}).get("count")
+                        bio = user.get("biography", "") or ""
+                        result["bio_length"] = len(bio)
+                        avatar_url = user.get("profile_pic_url_hd") or user.get("profile_pic_url", "")
+                        result["has_avatar"] = bool(avatar_url) and "44884218_345707102882519_2446069589734326272_n" not in avatar_url
+                        result["page_title"] = user.get("full_name") or username
+                        result["fetch_success"] = True
+                        result["source_note"] = "成功透過 Instagram 網頁版內部 API（web_profile_info）取得真實公開數據。"
+                        return result
+                    else:
+                        result["source_note"] = "帳號可能不存在或為私人帳號（API 回應中無使用者資料）。"
+                        return result
+                except ValueError:
+                    pass  # 回傳非 JSON，往下走 fallback
+
+            elif resp.status_code == 429:
+                if attempt < max_retries - 1:
+                    time.sleep(1.5 * (attempt + 1) + random.uniform(0.2, 0.8))
+                    api_headers["User-Agent"] = random.choice(mobile_uas)
+                    continue
+                else:
+                    result["source_note"] = "IG 因請求過於頻繁回傳 HTTP 429（多次重試仍失敗），可能為雲端共用 IP 已遭限流。"
+            else:
+                result["source_note"] = f"web_profile_info API 回應 HTTP {resp.status_code}，嘗試改用網頁 meta 標籤備援方案。"
+                break
+
+        except Exception as e:
+            result["source_note"] = f"連線發生例外狀況：{e}"
+            break
+
+    # --- 方法二（備援）：直接抓網頁 og:description ---
+    url = f"https://www.instagram.com/{username}/"
+    fallback_headers = {
+        **common_headers,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
     try:
-        resp = requests.get(url, headers=headers, timeout=5)
+        resp = requests.get(url, headers=fallback_headers, timeout=6)
         if resp.status_code != 200:
-            result["source_note"] = f"無法存取頁面（HTTP {resp.status_code}），可能為私人帳號、不存在或遭到限流。"
+            note = f"備援方案亦無法存取頁面（HTTP {resp.status_code}），可能為私人帳號、不存在或遭到限流。"
+            result["source_note"] = (result["source_note"] + " " + note) if result["source_note"] else note
             return result
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -202,9 +269,10 @@ def fetch_real_ig_public_data(username):
                 result["bio_length"] = len(bio_part[1])
 
         if not result["fetch_success"]:
-            result["source_note"] = "頁面已成功連線，但 IG 並未回傳粉絲數摘要（常見於需登入才能檢視的帳號）。"
+            note = "備援方案已連線成功，但 IG 並未在頁面中回傳粉絲數摘要（常見於需登入才能檢視的帳號）。"
+            result["source_note"] = (result["source_note"] + " " + note) if result["source_note"] else note
         else:
-            result["source_note"] = "成功從 Instagram 公開頁面 meta 資訊解析出基本統計數據。"
+            result["source_note"] = "web_profile_info API 失敗，改用網頁 meta 標籤備援方案成功解析出基本統計數據。"
 
     except Exception as e:
         result["source_note"] = f"連線發生例外狀況：{e}"
