@@ -306,22 +306,34 @@ with tab1:
     if analyze_btn:
         with st.spinner("正在進行高效並行爬取..."):
             G_res = crawl_web_parallel(start_url, max_links, max_layers)
-            pagerank_scores = nx.pagerank(G_res, alpha=alpha)
+            
+            # 安全防護 1：檢查圖是否為空
+            if G_res.number_of_nodes() == 0:
+                st.error("❌ 爬取失敗或找不到任何網路節點，請檢查起始網址是否正確。")
+                st.session_state.G = G_res
+                st.session_state.df = None
+            else:
+                pagerank_scores = nx.pagerank(G_res, alpha=alpha)
 
-            df_res = pd.DataFrame(
-                [
-                    {"網址": cc.convert(k), "權重值": v}
-                    for k, v in pagerank_scores.items()
-                ]
-            )
-            # 修復：簡繁轉換後可能有不同原始網址被合併成同一顯示字串，
-            # 造成同一 x 軸標籤對應多個資料點（折線圖出現異常連線）。
-            # 此處依「網址」去重，同名取權重值最大者。
-            df_res = df_res.groupby("網址", as_index=False)["權重值"].max()
-            df_res = df_res.sort_values(by="權重值", ascending=False).reset_index(drop=True)
-
-            st.session_state.G = G_res
-            st.session_state.df = df_res
+                # 安全防護 2：顯式指定欄位名稱，避免空資料時欄位遺失
+                df_res = pd.DataFrame(
+                    [
+                        {"網址": cc.convert(k), "權重值": v}
+                        for k, v in pagerank_scores.items()
+                    ], 
+                    columns=["網址", "權重值"]
+                )
+                
+                # 安全防護 3：確保 DataFrame 有資料才進行分組聚合
+                if not df_res.empty:
+                    df_res = df_res.groupby("網址", as_index=False)["權重值"].max()
+                    df_res = df_res.sort_values(by="權重值", ascending=False).reset_index(drop=True)
+                    
+                    st.session_state.G = G_res
+                    st.session_state.df = df_res
+                else:
+                    st.warning("⚠️ PageRank 計算未產生任何數據。")
+                    st.session_state.df = None
 
     if st.session_state.df is not None:
         df = st.session_state.df
